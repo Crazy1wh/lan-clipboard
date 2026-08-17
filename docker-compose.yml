@@ -7,6 +7,7 @@ services:
     volumes:
       - ./data:/app/data
     environment:
-      - MAX_HISTORY=200        # 历史记录保留条数
+      - MAX_HISTORY=2000       # 历史记录保留条数（防文字类无限增长）
       - MAX_FILE_MB=100        # 单文件大小上限 MB
+      - MAX_DISK_GB=10         # 数据总占用上限 GB，超出自动清理最旧内容
     restart: unless-stopped

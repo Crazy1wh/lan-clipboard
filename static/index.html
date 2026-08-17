@@ -66,6 +66,13 @@
   /* 历史列表 */
   .list-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
   .list-head .count { color: var(--muted); font-size: 13px; }
+  .search-wrap { display: flex; align-items: center; gap: 10px; flex: 1; justify-content: flex-end; }
+  .search-wrap input {
+    background: var(--card2); border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text); padding: 5px 12px; font-size: 13px; width: 190px; outline: none;
+  }
+  .search-wrap input:focus { border-color: var(--accent); }
+  .search-wrap input::placeholder { color: var(--muted); }
   .item {
     background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
     padding: 12px 14px; margin-bottom: 10px; animation: fadein .25s;
@@ -164,6 +171,10 @@
 <!-- 历史 -->
 <div class="list-head">
   <span>🕘 历史记录</span>
+  <div class="search-wrap">
+    <input id="searchInput" type="text" placeholder="🔍 搜索文字 / 文件名" autocomplete="off">
+    <span class="hint" id="diskUsage"></span>
+  </div>
   <span class="count" id="itemCount"></span>
 </div>
 <div id="list"></div>
@@ -188,7 +199,8 @@ function fmtSize(n) {
   if (n == null) return '';
   if (n < 1024) return n + ' B';
   if (n < 1048576) return (n/1024).toFixed(1) + ' KB';
-  return (n/1048576).toFixed(1) + ' MB';
+  if (n < 1073741824) return (n/1048576).toFixed(1) + ' MB';
+  return (n/1073741824).toFixed(2) + ' GB';
 }
 function toast(msg) {
   const t = $('#toast');
@@ -279,6 +291,7 @@ async function uploadFiles(files) {
   const results = await Promise.all(list.map(uploadFile));
   const ok = results.filter(Boolean).length;
   toast(`完成：${ok}/${list.length} 个上传成功`);
+  refreshStats();
 }
 
 /* 点击 dropzone 选择文件 */
@@ -437,17 +450,25 @@ async function fetchItems(afterId) {
   const r = await fetch(url);
   return (await r.json()).items;
 }
+function renderList(items) {
+  $('#list').innerHTML = '';
+  items.forEach(it => {
+    if (it.id > lastId) lastId = it.id;
+    $('#list').appendChild(renderItem(it));
+  });
+  $('#empty').textContent = '还没有内容，从上方粘贴第一条吧';
+  $('#empty').style.display = items.length ? 'none' : 'block';
+  updateCount();
+}
 async function refreshAll() {
   const btn = $('#btnRefresh');
   btn.innerHTML = '⏳ <span class="spin">⟳</span>';
   try {
     const items = await fetchItems(0);
     lastId = 0;
-    $('#list').innerHTML = '';
-    items.forEach(it => { if (it.id > lastId) lastId = it.id; $('#list').appendChild(renderItem(it)); });
+    renderList(items);
     lastFetch = lastId;
-    $('#empty').style.display = items.length ? 'none' : 'block';
-    updateCount();
+    refreshStats();
     toast('已刷新');
   } catch(e) {
     $('#connState').textContent = '⚠ 连接失败，检查服务是否运行';
@@ -455,7 +476,44 @@ async function refreshAll() {
     btn.innerHTML = '🔄 刷新';
   }
 }
+
+/* ---------- 全局搜索 ---------- */
+let searchMode = false;
+let searchTimer = null;
+async function doSearch() {
+  const q = $('#searchInput').value.trim();
+  if (!q) {
+    searchMode = false;
+    try {
+      const items = await fetchItems(0);
+      lastId = 0;
+      renderList(items);
+      lastFetch = lastId;
+    } catch(e) {}
+    return;
+  }
+  searchMode = true;
+  try {
+    const d = await fetch('/api/search?q=' + encodeURIComponent(q));
+    const items = (await d.json()).items;
+    $('#list').innerHTML = '';
+    items.forEach(it => $('#list').appendChild(renderItem(it)));
+    $('#empty').textContent = '没有匹配的内容';
+    $('#empty').style.display = items.length ? 'none' : 'block';
+    $('#itemCount').textContent = `「${q}」${items.length} 条`;
+  } catch(e) {}
+}
+
+/* ---------- 磁盘占用 ---------- */
+async function refreshStats() {
+  try {
+    const d = await (await fetch('/api/stats')).json();
+    $('#diskUsage').textContent = `💾 ${fmtSize(d.disk_used)} / ${fmtSize(d.disk_limit)}`;
+  } catch(e) {}
+}
+
 async function poll() {
+  if (searchMode) return;  // 搜索时暂停自动刷新，避免污染结果
   try {
     const items = await fetchItems(lastId);
     if (items.length) {
@@ -474,18 +532,19 @@ async function poll() {
 document.addEventListener('DOMContentLoaded', async () => {
   bindDropzone('#dzImage', '#fileImage');
   bindDropzone('#dzFile', '#fileFile');
+  $('#searchInput').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(doSearch, 300);
+  });
   $('#textInput').addEventListener('keydown', e => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendText();
   });
   try {
     const items = await fetchItems(0);
-    items.forEach(it => {
-      if (it.id > lastId) lastId = it.id;
-      $('#list').appendChild(renderItem(it));
-    });
+    lastId = 0;
+    renderList(items);
     lastFetch = lastId;
-    $('#empty').style.display = items.length ? 'none' : 'block';
-    updateCount();
+    refreshStats();
     $('#connState').textContent = '● 已连接 · 自动刷新 10s';
     $('#connState').style.color = '#6ee7b7';
   } catch(e) {

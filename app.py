@@ -21,6 +21,8 @@ DB_PATH = DATA_DIR / "clipboard.db"
 
 MAX_HISTORY = int(os.getenv("MAX_HISTORY", "200"))      # 保留的历史条数
 MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "100"))      # 单文件大小上限 MB
+MAX_DISK_GB = float(os.getenv("MAX_DISK_GB", "10"))     # 数据目录总占用上限 GB，超出自动清理最旧
+PRUNE_TARGET_RATIO = 0.9                                # 清理到上限的 90%，避免频繁触发
 
 app = FastAPI(title="LAN Clipboard")
 
@@ -50,20 +52,50 @@ def get_db():
     return conn
 
 
+def delete_row(conn, row):
+    """删除一条记录，连带清理磁盘文件。"""
+    if row["stored_name"]:
+        try:
+            (UPLOAD_DIR / row["stored_name"]).unlink(missing_ok=True)
+        except OSError:
+            pass
+    conn.execute("DELETE FROM items WHERE id=?", (row["id"],))
+
+
+def dir_size(path: Path) -> int:
+    total = 0
+    for p in path.rglob("*"):
+        if p.is_file():
+            try:
+                total += p.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
 def prune(conn):
-    """超出上限时删除最旧记录（连带磁盘文件）。"""
+    """条数软上限 + 磁盘容量上限，超限时从最旧开始删（连带磁盘文件）。"""
+    # 1) 条数限制：防文字类条目无限增长
     rows = conn.execute(
         "SELECT id, stored_name FROM items ORDER BY id DESC LIMIT -1 OFFSET ?",
         (MAX_HISTORY,),
     ).fetchall()
     for r in rows:
-        if r["stored_name"]:
-            try:
-                (UPLOAD_DIR / r["stored_name"]).unlink(missing_ok=True)
-            except OSError:
-                pass
-        conn.execute("DELETE FROM items WHERE id=?", (r["id"],))
+        delete_row(conn, r)
     conn.commit()
+    # 2) 容量限制：超过 MAX_DISK_GB 就删最旧，直到降到上限的 90%
+    limit = MAX_DISK_GB * 1024 ** 3
+    target = limit * PRUNE_TARGET_RATIO
+    while dir_size(DATA_DIR) > limit:
+        r = conn.execute(
+            "SELECT id, stored_name FROM items ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+        if r is None:
+            break
+        delete_row(conn, r)
+        conn.commit()
+        if dir_size(DATA_DIR) <= target:
+            break
 
 
 def row_to_dict(r):
@@ -106,6 +138,41 @@ def list_items(after_id: int = 0, limit: int = 100):
         ).fetchall()
     conn.close()
     return {"items": [row_to_dict(r) for r in rows]}
+
+
+def escape_like(s: str) -> str:
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+@app.get("/api/search")
+def search(q: str = "", limit: int = 100):
+    """全局搜索：匹配文字内容或文件名（不区分大小写）。"""
+    q = (q or "").strip()
+    if not q:
+        return {"items": []}
+    pattern = f"%{escape_like(q)}%"
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM items WHERE content LIKE ? ESCAPE '\\' OR filename LIKE ? ESCAPE '\\' "
+        "ORDER BY id DESC LIMIT ?",
+        (pattern, pattern, limit),
+    ).fetchall()
+    conn.close()
+    return {"items": [row_to_dict(r) for r in rows]}
+
+
+@app.get("/api/stats")
+def stats():
+    """数据占用统计：条数、磁盘占用、上限。"""
+    conn = get_db()
+    count = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+    conn.close()
+    used = dir_size(DATA_DIR)
+    return {
+        "count": count,
+        "disk_used": used,
+        "disk_limit": int(MAX_DISK_GB * 1024 ** 3),
+    }
 
 
 class TextIn(BaseModel):
