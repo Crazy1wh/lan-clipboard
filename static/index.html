@@ -267,7 +267,7 @@
   <button class="chip" data-view="star" onclick="setView('star')">⭐ 常用</button>
   <span id="groupChips"></span>
   <button class="chip add" onclick="addGroup()">＋ 分组</button>
-  <button class="chip trash" data-view="trash" onclick="setView('trash')">🗑 已隐藏</button>
+  <button class="chip trash" data-view="trash" onclick="setView('trash')">🗑 回收站</button>
 </div>
 <!-- 历史 -->
 <div class="list-head">
@@ -652,7 +652,7 @@ async function hideItem(id) {
     if (el) el.remove();
     updateCount();
     if (!$('#list').children.length) $('#empty').style.display = 'block';
-    toast('已移入「🗑 已隐藏」，可随时恢复');
+    toast('已移入回收站，7 天后自动清理，可随时恢复');
   }
 }
 async function restoreItem(id) {
@@ -709,7 +709,7 @@ document.addEventListener('click', e => {
   if (groupMenuEl && !groupMenuEl.contains(e.target)) closeGroupMenu();
 });
 async function clearAll() {
-  if (!confirm('确定清空全部？将彻底删除所有内容（含已隐藏），不可恢复！')) return;
+  if (!confirm('确定清空全部？将彻底删除所有内容（含回收站），不可恢复！')) return;
   const r = await fetch('/api/items', {method: 'DELETE'});
   const d = await r.json();
   if (d.ok) {
@@ -758,7 +758,7 @@ async function fetchItems(afterId) {
   return (await r.json()).items;
 }
 function renderList(items) {
-  const titles = {all: '🕘 历史记录', star: '⭐ 常用', trash: '🗑 已隐藏', group: '📁 分组内容'};
+  const titles = {all: '🕘 历史记录', star: '⭐ 常用', trash: '🗑 回收站', group: '📁 分组内容'};
   $('#listTitle').textContent = titles[view.type] || '🕘 历史记录';
   $('#list').innerHTML = '';
   items.forEach(it => {

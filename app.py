@@ -62,6 +62,8 @@ def init():
         conn.execute("ALTER TABLE items ADD COLUMN group_id INTEGER")
     if "device" not in cols:
         conn.execute("ALTER TABLE items ADD COLUMN device TEXT")
+    if "deleted_at" not in cols:
+        conn.execute("ALTER TABLE items ADD COLUMN deleted_at REAL")
     conn.commit()
     conn.close()
 
@@ -131,30 +133,56 @@ async def resolve_hostname(ip: str) -> str | None:
     return await asyncio.to_thread(_lookup_hostname, ip)
 
 
-def prune(conn):
-    """条数软上限 + 磁盘容量上限，超限时优先物理删已隐藏（回收站），再删最旧（连带磁盘文件）。"""
-    # 1) 条数限制：防文字类条目无限增长
+RECYCLE_DAYS = 7  # 回收站保留天数，到期自动彻底清理
+_RECYCLE_LAST = {"ts": 0.0}  # 上次回收站清扫时间（节流）
+
+
+def recycle_sweep(conn, force: bool = False) -> None:
+    """回收站自动清理：删除超过保留天数的回收站记录（连带磁盘文件）。
+    节流：默认至少 5 分钟才真正执行一次，避免每个请求都查。"""
+    now = time.time()
+    if not force and now - _RECYCLE_LAST["ts"] < 300:
+        return
+    _RECYCLE_LAST["ts"] = now
+    cutoff = now - RECYCLE_DAYS * 86400
     rows = conn.execute(
-        "SELECT id, stored_name, size FROM items ORDER BY id DESC LIMIT -1 OFFSET ?",
-        (MAX_HISTORY,),
+        "SELECT id, stored_name, size FROM items WHERE deleted=1 AND deleted_at IS NOT NULL AND deleted_at < ?",
+        (cutoff,),
     ).fetchall()
     for r in rows:
         delete_row(conn, r)
-    conn.commit()
+    if rows:
+        conn.commit()
+
+
+def oldest_row(conn, prefer_deleted: bool):
+    """取最旧的一条（优先回收站）。"""
+    if prefer_deleted:
+        return conn.execute(
+            "SELECT id, stored_name, size FROM items WHERE deleted=1 ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+    return conn.execute(
+        "SELECT id, stored_name, size FROM items ORDER BY id ASC LIMIT 1"
+    ).fetchone()
+
+
+def prune(conn):
+    """条数软上限 + 磁盘容量上限:优先物理清理回收站,再清最旧（连带磁盘文件）。"""
+    recycle_sweep(conn)
+    # 1) 条数限制:防文字类条目无限增长，超限时优先清回收站
+    count = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+    while count > MAX_HISTORY:
+        r = oldest_row(conn, prefer_deleted=True) or oldest_row(conn, prefer_deleted=False)
+        if r is None:
+            break
+        delete_row(conn, r)
+        conn.commit()
+        count -= 1
     # 2) 容量限制：超过 MAX_DISK_GB 就删最旧，直到降到上限的 90%
     limit = MAX_DISK_GB * 1024 ** 3
     target = limit * PRUNE_TARGET_RATIO
-    def oldest_row(prefer_deleted):
-        if prefer_deleted:
-            return conn.execute(
-                "SELECT id, stored_name, size FROM items WHERE deleted=1 ORDER BY id ASC LIMIT 1"
-            ).fetchone()
-        return conn.execute(
-            "SELECT id, stored_name, size FROM items ORDER BY id ASC LIMIT 1"
-        ).fetchone()
-
     while disk_used() > limit:
-        r = oldest_row(prefer_deleted=True) or oldest_row(prefer_deleted=False)
+        r = oldest_row(conn, prefer_deleted=True) or oldest_row(conn, prefer_deleted=False)
         if r is None:
             break
         delete_row(conn, r)
@@ -203,6 +231,8 @@ def list_items(
 ):
     """历史列表。默认未隐藏；deleted=1 看回收站；starred=1 看常用；group_id 看分组。
     after_id>0 时只返回比它新的条目（轮询用）。"""
+    conn = get_db()
+    recycle_sweep(conn)  # 顺手清理过期回收站（节流 5 分钟）
     conds = ["i.deleted=?"]
     params: list = [deleted]
     if starred:
@@ -233,12 +263,15 @@ def escape_like(s: str) -> str:
 
 @app.get("/api/search")
 def search(q: str = "", limit: int = 100):
-    """全局搜索：匹配文字内容或文件名（不区分大小写），不含已隐藏。"""
+    """全局搜索：匹配文字内容或文件名（不区分大小写），不含回收站。
+
+    """
     q = (q or "").strip()
     if not q:
         return {"items": []}
     pattern = f"%{escape_like(q)}%"
     conn = get_db()
+    recycle_sweep(conn)
     rows = conn.execute(
         "SELECT i.*, g.name AS group_name FROM items i LEFT JOIN groups g ON i.group_id=g.id "
         "WHERE i.deleted=0 AND (i.content LIKE ? ESCAPE '\\' OR i.filename LIKE ? ESCAPE '\\') "
@@ -430,13 +463,13 @@ def get_file(stored_name: str):
 
 @app.delete("/api/items/{item_id}")
 def delete_item(item_id: int):
-    """软删除：移入已隐藏（回收站），可恢复。"""
+    """软删除：移入回收站（保留7天，可恢复），7天后自动清理。"""
     conn = get_db()
     r = conn.execute("SELECT id FROM items WHERE id=?", (item_id,)).fetchone()
     if r is None:
         conn.close()
         return JSONResponse({"ok": False, "error": "不存在"}, status_code=404)
-    conn.execute("UPDATE items SET deleted=1 WHERE id=?", (item_id,))
+    conn.execute("UPDATE items SET deleted=1, deleted_at=? WHERE id=?", (time.time(), item_id))
     conn.commit()
     conn.close()
     return {"ok": True}
@@ -491,7 +524,7 @@ def set_group(item_id: int, body: GroupAssign):
 
 @app.delete("/api/items")
 def clear_all():
-    """清空所有内容（含已隐藏），物理删除。"""
+    """清空所有内容（含回收站），物理删除。"""
     conn = get_db()
     rows = conn.execute("SELECT stored_name FROM items WHERE stored_name IS NOT NULL").fetchall()
     for r in rows:
