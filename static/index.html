@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>局域网剪贴板</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect x='18' y='22' width='64' height='62' rx='12' fill='%234f8cff'/><rect x='30' y='38' width='40' height='7' rx='3.5' fill='white'/><rect x='30' y='51' width='40' height='7' rx='3.5' fill='white'/><rect x='30' y='64' width='24' height='7' rx='3.5' fill='white'/></svg>">
 <style>
   :root {
     --bg: #0f1115; --card: #171a21; --card2: #1e2230; --border: #2a2f3d;
@@ -114,6 +115,7 @@
   .item-meta .tag.image { color: #fbbf24; }
   .item-meta .tag.file { color: #c4b5fd; }
   .item-meta .ip { font-family: ui-monospace, monospace; }
+  .item-meta .dev { font-weight: 600; }
   .item-content { font-size: 14px; line-height: 1.55; word-break: break-word; white-space: pre-wrap; }
   .item-content a { color: var(--accent); text-decoration: none; }
   .item-content a:hover { text-decoration: underline; }
@@ -135,8 +137,9 @@
     .search-wrap input { width: 100%; }
     .search-wrap { width: 100%; }
     .list-head { flex-wrap: wrap; gap: 6px; }
-    .item-actions button { padding: 6px 9px; font-size: 15px; }
-    .item-actions .lbl { display: none; }  /* 移动端只显示图标，保证一行放下 */
+    .item-actions { gap: 4px; flex-wrap: nowrap; justify-content: flex-end; }
+    .item-actions button { padding: 5px 6px; font-size: 12px; white-space: nowrap; }
+    .item-actions .lbl { display: inline; font-size: 11px; }  /* 移动端图标+短文字，紧凑排一行 */
     .item-actions button:first-child { margin-left: 0; }
     .item-content { font-size: 15px; }
     .chip { padding: 5px 12px; }
@@ -304,6 +307,23 @@ let lastId = 0;          // 已加载的最大 id
 let lastFetch = 0;
 const POLL_MS = 10000;
 
+/* ---------- 设备名识别（UA 解析，随上传/发送上报） ---------- */
+const DEVICE = (() => {
+  const ua = navigator.userAgent;
+  try {
+    if (/iPhone/.test(ua)) return 'iPhone';
+    if (/iPad/.test(ua)) return 'iPad';
+    if (/iPod/.test(ua)) return 'iPod';
+    const am = ua.match(/Android\s+([\d.]+)[^;]*;\s*([^;)]+)/);
+    if (am) return `安卓${am[1]}·${am[2].trim()}`;
+    if (/Windows/.test(ua)) return 'Windows';
+    if (/Mac OS X/.test(ua)) return 'Mac';
+    if (/CrOS/.test(ua)) return 'ChromeOS';
+    if (/Linux/.test(ua)) return 'Linux';
+  } catch(e) {}
+  return '';
+})();
+
 /* ---------- 工具 ---------- */
 function fmtTime(ts) {
   const d = new Date(ts * 1000);
@@ -367,7 +387,7 @@ async function sendText() {
   const r = await fetch('/api/text', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({content})
+    body: JSON.stringify({content, device: DEVICE})
   });
   const d = await r.json();
   if (d.ok) {
@@ -386,15 +406,25 @@ function showUploadBar() {
   $('#uploadBar').style.display = 'block';
   $('#ubFill').style.width = '0%';
 }
+function fmtETA(secs) {
+  if (!isFinite(secs) || secs < 0.5) return '计算中';
+  if (secs < 60) return Math.ceil(secs) + 's';
+  const m = Math.floor(secs / 60), s = Math.ceil(secs % 60);
+  return m + 'm' + s + 's';
+}
 function updateUploadBar(file, pct, speedMbs, loaded, total) {
   $('#ubFill').style.width = Math.min(100, pct) + '%';
   if (pct >= 100) {
-    $('#ubInfo').textContent = `${file.name} 已完成，等待服务器处理…`;
+    $('#ubInfo').textContent = `${file.name} 上传完成，正在保存…`;
     return;
   }
   const sizeStr = total ? `${fmtSize(loaded)} / ${fmtSize(total)}` : fmtSize(loaded);
+  let eta = '';
+  if (total && speedMbs > 0.01) {
+    eta = ' · 剩余 ' + fmtETA((total - loaded) / (speedMbs * 1048576));
+  }
   $('#ubInfo').textContent =
-    `第 ${uploadIndex}/${uploadTotal} 个 · ${file.name} · ${pct}% · ${speedMbs.toFixed(1)}MB/s · ${sizeStr}`;
+    `第 ${uploadIndex}/${uploadTotal} 个 · ${file.name} · ${pct}% · ${speedMbs.toFixed(1)}MB/s${eta} · ${sizeStr}`;
 }
 function hideUploadBar() {
   $('#uploadBar').style.display = 'none';
@@ -427,6 +457,7 @@ function uploadFile(file) {
     const fd = new FormData();
     fd.append('file', file);
     fd.append('kind', kind);
+    fd.append('device', DEVICE);
     xhr.open('POST', '/api/upload');
     xhr.send(fd);
   });
@@ -546,7 +577,7 @@ function renderItem(it) {
       <span class="tag ${it.type}">${typeTag(it.type)}</span>
       ${it.group_name ? `<span class="tag group">📁 ${esc(it.group_name)}</span>` : ''}
       <span>${fmtTime(it.created_at)}</span>
-      <span class="ip">${esc(it.ip||'')}</span>
+      <span class="dev">${it.device ? esc(it.device) : ''}</span><span class="ip">${it.device ? '(' + esc(it.ip || '') + ')' : esc(it.ip || '')}</span>
     </div>
     ${body}
     <div class="item-actions">${actions}</div>`;
@@ -578,12 +609,41 @@ async function copyItem(id) {
 function downloadItem(id) {
   const el = document.querySelector(`[data-id="${id}"]`);
   if (!el || !el.dataset.url) return;
-  const a = document.createElement('a');
-  a.href = el.dataset.url;
-  a.download = el.dataset.fname || '';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const fname = el.dataset.fname || 'download';
+  showUploadBar();
+  const startT = Date.now();
+  const xhr = new XMLHttpRequest();
+  xhr.open('GET', location.origin + el.dataset.url, true);
+  xhr.responseType = 'blob';
+  xhr.onprogress = e => {
+    if (!e.lengthComputable) return;
+    const secs = (Date.now() - startT) / 1000 || 1;
+    const speedMbs = e.loaded / secs / 1048576;
+    const pct = e.loaded / e.total * 100;
+    $('#ubFill').style.width = Math.min(100, pct) + '%';
+    let eta = '';
+    if (speedMbs > 0.01) {
+      eta = ' · 剩余 ' + fmtETA((e.total - e.loaded) / (speedMbs * 1048576));
+    }
+    $('#ubInfo').textContent =
+      `下载中 · ${fname} · ${pct.toFixed(0)}% · ${speedMbs.toFixed(1)}MB/s${eta} · ${fmtSize(e.loaded)} / ${fmtSize(e.total)}`;
+  };
+  xhr.onload = () => {
+    hideUploadBar();
+    if (xhr.status === 200 && xhr.response) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(xhr.response);
+      a.download = fname;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+      toast('下载完成 ✓');
+    } else {
+      toast('下载失败: HTTP ' + xhr.status);
+    }
+  };
+  xhr.onerror = () => { hideUploadBar(); toast('下载失败: 网络错误'); };
+  xhr.send();
 }
 async function hideItem(id) {
   const d = await (await fetch('/api/items/' + id, {method: 'DELETE'})).json();

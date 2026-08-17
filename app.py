@@ -57,6 +57,8 @@ def init():
         conn.execute("ALTER TABLE items ADD COLUMN starred INTEGER DEFAULT 0")
     if "group_id" not in cols:
         conn.execute("ALTER TABLE items ADD COLUMN group_id INTEGER")
+    if "device" not in cols:
+        conn.execute("ALTER TABLE items ADD COLUMN device TEXT")
     conn.commit()
     conn.close()
 
@@ -71,7 +73,12 @@ def delete_row(conn, row):
     """删除一条记录，连带清理磁盘文件。"""
     if row["stored_name"]:
         try:
-            (UPLOAD_DIR / row["stored_name"]).unlink(missing_ok=True)
+            p = UPLOAD_DIR / row["stored_name"]
+            size = row["size"] if "size" in row.keys() and row["size"] else 0
+            if p.exists():
+                size = p.stat().st_size
+                p.unlink()
+            bump_disk_used(-size)
         except OSError:
             pass
     conn.execute("DELETE FROM items WHERE id=?", (row["id"],))
@@ -88,11 +95,26 @@ def dir_size(path: Path) -> int:
     return total
 
 
+# 磁盘用量缓存：避免每次上传/删除后全目录扫描（文件多时极慢）
+_disk_used = {"bytes": None}
+
+
+def disk_used(force: bool = False) -> int:
+    if force or _disk_used["bytes"] is None:
+        _disk_used["bytes"] = dir_size(DATA_DIR)
+    return _disk_used["bytes"]
+
+
+def bump_disk_used(delta: int) -> None:
+    if _disk_used["bytes"] is not None:
+        _disk_used["bytes"] = max(0, _disk_used["bytes"] + delta)
+
+
 def prune(conn):
     """条数软上限 + 磁盘容量上限，超限时优先物理删已隐藏（回收站），再删最旧（连带磁盘文件）。"""
     # 1) 条数限制：防文字类条目无限增长
     rows = conn.execute(
-        "SELECT id, stored_name FROM items ORDER BY id DESC LIMIT -1 OFFSET ?",
+        "SELECT id, stored_name, size FROM items ORDER BY id DESC LIMIT -1 OFFSET ?",
         (MAX_HISTORY,),
     ).fetchall()
     for r in rows:
@@ -104,19 +126,19 @@ def prune(conn):
     def oldest_row(prefer_deleted):
         if prefer_deleted:
             return conn.execute(
-                "SELECT id, stored_name FROM items WHERE deleted=1 ORDER BY id ASC LIMIT 1"
+                "SELECT id, stored_name, size FROM items WHERE deleted=1 ORDER BY id ASC LIMIT 1"
             ).fetchone()
         return conn.execute(
-            "SELECT id, stored_name FROM items ORDER BY id ASC LIMIT 1"
+            "SELECT id, stored_name, size FROM items ORDER BY id ASC LIMIT 1"
         ).fetchone()
 
-    while dir_size(DATA_DIR) > limit:
+    while disk_used() > limit:
         r = oldest_row(prefer_deleted=True) or oldest_row(prefer_deleted=False)
         if r is None:
             break
         delete_row(conn, r)
         conn.commit()
-        if dir_size(DATA_DIR) <= target:
+        if disk_used() <= target:
             break
 
 
@@ -133,6 +155,7 @@ def row_to_dict(r):
         "starred": r["starred"],
         "group_id": r["group_id"],
         "group_name": r["group_name"] if "group_name" in r.keys() else None,
+        "device": r["device"] if "device" in r.keys() else None,
         "url": f"/files/{r['stored_name']}" if r["stored_name"] else None,
     }
 
@@ -261,7 +284,7 @@ def stats():
     conn = get_db()
     count = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
     conn.close()
-    used = dir_size(DATA_DIR)
+    used = disk_used()
     return {
         "count": count,
         "disk_used": used,
@@ -271,6 +294,7 @@ def stats():
 
 class TextIn(BaseModel):
     content: str
+    device: str | None = None
 
 
 @app.post("/api/text")
@@ -281,8 +305,8 @@ def add_text(body: TextIn, request: Request):
     ip = request.client.host if request.client else ""
     conn = get_db()
     cur = conn.execute(
-        "INSERT INTO items (type, content, ip, created_at) VALUES (?,?,?,?)",
-        ("text", content, ip, time.time()),
+        "INSERT INTO items (type, content, device, ip, created_at) VALUES (?,?,?,?,?)",
+        ("text", content, (body.device or "").strip() or None, ip, time.time()),
     )
     conn.commit()
     item = conn.execute(
@@ -295,12 +319,12 @@ def add_text(body: TextIn, request: Request):
 
 
 @app.post("/api/upload")
-async def upload(request: Request, file: UploadFile = File(...), kind: str = Form("file")):
+async def upload(request: Request, file: UploadFile = File(...), kind: str = Form("file"), device: str = Form("")):
     """上传图片或文件。无单文件上限：只要上传后总占用不超过容量上限的 95% 即可。
     流式写入，边写边检查容量，超限即中止并清理。"""
     limit = int(MAX_DISK_GB * 1024 ** 3)
     ceil = int(limit * UPLOAD_CEIL_RATIO)
-    used = dir_size(DATA_DIR)
+    used = disk_used()
     if used >= ceil:
         free = (limit - used) / 1048576
         return JSONResponse(
@@ -338,12 +362,13 @@ async def upload(request: Request, file: UploadFile = File(...), kind: str = For
     if size == 0:
         dest.unlink(missing_ok=True)
         return JSONResponse({"ok": False, "error": "文件为空"}, status_code=400)
+    bump_disk_used(size)
 
     ip = request.client.host if request.client else ""
     conn = get_db()
     cur = conn.execute(
-        "INSERT INTO items (type, filename, stored_name, size, ip, created_at) VALUES (?,?,?,?,?,?)",
-        (kind, file.filename, stored, size, ip, time.time()),
+        "INSERT INTO items (type, filename, stored_name, size, device, ip, created_at) VALUES (?,?,?,?,?,?,?)",
+        (kind, file.filename, stored, size, device.strip() or None, ip, time.time()),
     )
     conn.commit()
     item = conn.execute(
