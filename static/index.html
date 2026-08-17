@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>局域网剪贴板</title>
 <style>
   :root {
@@ -14,7 +14,9 @@
   body {
     background: var(--bg); color: var(--text);
     font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
-    max-width: 860px; margin: 0 auto; padding: 20px 16px 60px;
+    max-width: 860px; margin: 0 auto; padding: 20px 16px calc(60px + env(safe-area-inset-bottom));
+    touch-action: manipulation;  /* 防双击缩放 */
+    -webkit-tap-highlight-color: transparent;
   }
   header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
   header h1 { font-size: 20px; font-weight: 700; }
@@ -41,7 +43,8 @@
   textarea {
     width: 100%; min-height: 90px; resize: vertical; background: var(--card2);
     border: 1px solid var(--border); border-radius: 8px; color: var(--text);
-    padding: 10px; font-size: 14px; font-family: inherit; outline: none;
+    padding: 10px; font-size: 16px; font-family: inherit; outline: none;
+    -webkit-appearance: none; appearance: none;  /* 16px 防 iOS 聚焦自动放大 */
   }
   textarea:focus { border-color: var(--accent); }
   .composer-row { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
@@ -69,7 +72,7 @@
   .search-wrap { display: flex; align-items: center; gap: 10px; flex: 1; justify-content: flex-end; }
   .search-wrap input {
     background: var(--card2); border: 1px solid var(--border); border-radius: 8px;
-    color: var(--text); padding: 5px 12px; font-size: 13px; width: 190px; outline: none;
+    color: var(--text); padding: 6px 12px; font-size: 16px; width: 190px; outline: none;  /* 16px 防 iOS 聚焦自动放大 */
   }
   .search-wrap input:focus { border-color: var(--accent); }
   .search-wrap input::placeholder { color: var(--muted); }
@@ -91,7 +94,7 @@
   .group-menu {
     position: absolute; z-index: 98; background: var(--card2);
     border: 1px solid var(--border); border-radius: 10px; min-width: 150px;
-    box-shadow: 0 8px 24px rgba(0,0,0,.5); overflow: hidden;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5); overflow-y: auto; max-height: 60vh;
   }
   .group-menu .gm-item { padding: 8px 14px; font-size: 13px; cursor: pointer; }
   .group-menu .gm-item:hover { background: var(--accent); color: #fff; }
@@ -121,8 +124,25 @@
   .item-file .ficon { font-size: 26px; }
   .item-file .fname { font-size: 14px; word-break: break-all; }
   .item-file .fsize { font-size: 12px; color: var(--muted); }
-  .item-actions { display: flex; gap: 6px; margin-top: 10px; justify-content: flex-end; }
+  .item-actions { display: flex; gap: 6px; margin-top: 10px; justify-content: flex-end; flex-wrap: wrap; }
   .item-actions button { padding: 4px 10px; font-size: 12px; }
+
+  /* 移动端适配 */
+  @media (max-width: 640px) {
+    body { padding: 12px 10px calc(50px + env(safe-area-inset-bottom)); }
+    header { flex-wrap: wrap; gap: 8px; }
+    header h1 { font-size: 17px; }
+    .search-wrap input { width: 100%; }
+    .search-wrap { width: 100%; }
+    .list-head { flex-wrap: wrap; gap: 6px; }
+    .item-actions button { padding: 6px 12px; font-size: 13px; }
+    .item-actions button:first-child { margin-left: 0; }
+    .item-content { font-size: 15px; }
+    .chip { padding: 5px 12px; }
+    .group-bar { gap: 6px; margin-bottom: 8px; }
+    .toast { bottom: calc(16px + env(safe-area-inset-bottom)); font-size: 13px; width: max-content; max-width: 86vw; }
+    .dropzone { padding: 20px 12px; }
+  }
 
   /* Lightbox */
   .lightbox {
@@ -166,9 +186,9 @@
   </div>
 
   <div class="panel active" id="panel-text">
-    <textarea id="textInput" placeholder="输入或粘贴文字，URL 自动转为链接…&#10;也可以直接 Ctrl+V 粘贴图片"></textarea>
+    <textarea id="textInput" placeholder="输入或粘贴文字，URL 自动转为链接…&#10;图片请到「图片」标签选择/拍照上传"></textarea>
     <div class="composer-row">
-      <span class="hint">Ctrl+Enter 发送</span>
+      <span class="hint">Ctrl+Enter 发送 · 支持长按粘贴</span>
       <span class="spacer"></span>
       <button class="primary" onclick="sendText()">发送 ➤</button>
     </div>
