@@ -152,6 +152,30 @@
   .lightbox.open { display: flex; }
   .lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 8px; }
 
+  /* 分享弹窗 */
+  .modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none;
+    align-items: center; justify-content: center; z-index: 99; padding: 20px;
+  }
+  .modal.open { display: flex; }
+  .modal-box {
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    max-width: 340px; width: 100%; padding: 16px;
+  }
+  .modal-head {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 15px; font-weight: 700; margin-bottom: 12px;
+  }
+  .modal-x { background: transparent; border: none; color: var(--muted); font-size: 15px; padding: 2px 6px; }
+  .modal-body { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+  #shareQr { background: #fff; padding: 10px; border-radius: 10px; }
+  #shareQr svg { display: block; width: 200px; height: 200px; }
+  .share-link-row { display: flex; gap: 8px; width: 100%; }
+  .share-link-row input {
+    flex: 1; min-width: 0; background: var(--card2); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--text); padding: 8px 10px; font-size: 12px; outline: none;
+  }
+
   /* 新内容提示 */
   .toast {
     position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
@@ -232,8 +256,25 @@
 <div class="empty" id="empty" style="display:none">还没有内容，从上方粘贴第一条吧</div>
 
 <div class="lightbox" id="lightbox" onclick="closeLightbox()"><img id="lightboxImg" alt=""></div>
+
+<!-- 分享弹窗 -->
+<div class="modal" id="shareModal" onclick="closeShare()">
+  <div class="modal-box" onclick="event.stopPropagation()">
+    <div class="modal-head">📤 分享文件 <button class="modal-x" onclick="closeShare()">✕</button></div>
+    <div class="modal-body">
+      <div id="shareQr"></div>
+      <div class="hint" style="text-align:center">扫码或复制链接，其他人即可下载</div>
+      <div class="share-link-row">
+        <input id="shareLink" readonly onclick="this.select()">
+        <button class="primary" onclick="copyShareLink()">📋 复制</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
+<script src="/static/vendor/qrcode.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 let lastId = 0;          // 已加载的最大 id
@@ -425,6 +466,7 @@ function renderItem(it) {
       actions += `<button onclick="copyItem(${it.id})">📋 复制</button>`;
     } else {
       actions += `<button onclick="downloadItem(${it.id})">⬇ 下载</button>`;
+      actions += `<button onclick="shareItem(${it.id})">📤 分享</button>`;
     }
     if (it.type === 'image') {
       actions += `<button onclick="openLightbox('${it.url}')">🔍 查看</button>`;
@@ -558,6 +600,31 @@ async function clearAll() {
 /* ---------- Lightbox ---------- */
 function openLightbox(src) { $('#lightboxImg').src = src; $('#lightbox').classList.add('open'); }
 function closeLightbox() { $('#lightbox').classList.remove('open'); }
+
+/* ---------- 分享：二维码 + 复制链接 ---------- */
+let currentShareLink = '';
+function shareItem(id) {
+  const el = document.querySelector(`[data-id="${id}"]`);
+  if (!el || !el.dataset.url) return;
+  const link = location.origin + el.dataset.url;
+  currentShareLink = link;
+  $('#shareLink').value = link;
+  try {
+    const qr = qrcode(0, 'M');
+    qr.addData(link);
+    qr.make();
+    $('#shareQr').innerHTML = qr.createSvgTag(4, 4);
+  } catch(e) {
+    $('#shareQr').innerHTML = '<span class="hint">二维码生成失败</span>';
+  }
+  $('#shareModal').classList.add('open');
+  copyText(link).then(ok => toast(ok ? '链接已自动复制 ✓ 扫码即可下载' : '二维码已生成，请手动复制'));
+}
+function closeShare() { $('#shareModal').classList.remove('open'); }
+async function copyShareLink() {
+  const ok = await copyText(currentShareLink);
+  toast(ok ? '链接已复制 ✓' : '复制失败，请手动选择复制');
+}
 
 /* ---------- 数据加载 ---------- */
 async function fetchItems(afterId) {
