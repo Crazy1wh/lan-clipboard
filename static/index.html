@@ -135,7 +135,8 @@
     .search-wrap input { width: 100%; }
     .search-wrap { width: 100%; }
     .list-head { flex-wrap: wrap; gap: 6px; }
-    .item-actions button { padding: 6px 12px; font-size: 13px; }
+    .item-actions button { padding: 6px 9px; font-size: 15px; }
+    .item-actions .lbl { display: none; }  /* 移动端只显示图标，保证一行放下 */
     .item-actions button:first-child { margin-left: 0; }
     .item-content { font-size: 15px; }
     .chip { padding: 5px 12px; }
@@ -463,17 +464,17 @@ function renderItem(it) {
     actions += `<button class="danger" onclick="purgeItem(${it.id})">彻底删除</button>`;
   } else {
     if (it.type === 'text') {
-      actions += `<button onclick="copyItem(${it.id})">📋 复制</button>`;
+      actions += `<button onclick="copyItem(${it.id})" title="复制">📋<span class="lbl"> 复制</span></button>`;
     } else {
-      actions += `<button onclick="downloadItem(${it.id})">⬇ 下载</button>`;
-      actions += `<button onclick="shareItem(${it.id})">📤 分享</button>`;
+      actions += `<button onclick="downloadItem(${it.id})" title="下载">⬇<span class="lbl"> 下载</span></button>`;
+      actions += `<button onclick="shareItem(${it.id})" title="分享">📤<span class="lbl"> 分享</span></button>`;
     }
     if (it.type === 'image') {
-      actions += `<button onclick="openLightbox('${it.url}')">🔍 查看</button>`;
+      actions += `<button onclick="openLightbox('${it.url}')" title="查看大图">🔍<span class="lbl"> 查看</span></button>`;
     }
-    actions += `<button class="${it.starred ? 'star-on' : ''}" onclick="toggleStar(${it.id})">${it.starred ? '★' : '☆'} 常用</button>`;
-    actions += `<button onclick="showGroupMenu(${it.id}, this, event)">🗂 分组</button>`;
-    actions += `<button class="danger" onclick="hideItem(${it.id})">🗑 删除</button>`;
+    actions += `<button class="${it.starred ? 'star-on' : ''}" onclick="toggleStar(${it.id})" title="常用">${it.starred ? '★' : '☆'}<span class="lbl"> 常用</span></button>`;
+    actions += `<button onclick="showGroupMenu(${it.id}, this, event)" title="分组">🗂<span class="lbl"> 分组</span></button>`;
+    actions += `<button class="danger" onclick="hideItem(${it.id})" title="删除">🗑<span class="lbl"> 删除</span></button>`;
   }
 
   div.innerHTML = `
