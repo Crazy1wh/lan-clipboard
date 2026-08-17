@@ -1,4 +1,5 @@
-FROM python:3.11-slim
+# 基础镜像走国内加速器（本机直连 Docker Hub 被墙；公网环境可改回 python:3.11-slim）
+FROM docker.1ms.run/library/python:3.11-slim
 
 WORKDIR /app
 
