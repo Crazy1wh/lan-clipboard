@@ -55,6 +55,8 @@
     transition: border-color .15s, background .15s;
   }
   .dropzone.drag { border-color: var(--accent); background: rgba(79,140,255,.08); }
+  body.dragging .composer { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,140,255,.25); }
+  body.dragging .dropzone { border-color: var(--accent); background: rgba(79,140,255,.08); }
   .dropzone .big { font-size: 15px; color: var(--text); margin-bottom: 4px; }
   .dropzone input[type=file] { display: none; }
   .preview-box { margin-top: 10px; display: none; }
@@ -144,27 +146,17 @@
 
   <div class="panel" id="panel-image">
     <div class="dropzone" id="dzImage">
-      <div class="big">🖼 点击选择 / 拖拽 / Ctrl+V 粘贴图片</div>
-      <div>PNG · JPG · GIF · WEBP</div>
-      <input type="file" id="fileImage" accept="image/*">
-    </div>
-    <div class="preview-box" id="previewImage"></div>
-    <div class="composer-row">
-      <span class="spacer"></span>
-      <button class="primary" id="btnSendImage" disabled>上传 ➤</button>
+      <div class="big">🖼 点击选择 / 拖拽 / Ctrl+V 粘贴，自动上传</div>
+      <div>PNG · JPG · GIF · WEBP · 支持多文件</div>
+      <input type="file" id="fileImage" accept="image/*" multiple>
     </div>
   </div>
 
   <div class="panel" id="panel-file">
     <div class="dropzone" id="dzFile">
-      <div class="big">📎 点击选择或拖拽文件</div>
-      <div>单个文件 ≤ 100MB</div>
-      <input type="file" id="fileFile">
-    </div>
-    <div class="preview-box" id="previewFile"></div>
-    <div class="composer-row">
-      <span class="spacer"></span>
-      <button class="primary" id="btnSendFile" disabled>上传 ➤</button>
+      <div class="big">📎 点击选择或拖拽文件，自动上传</div>
+      <div>单个文件 ≤ 100MB · 支持多文件</div>
+      <input type="file" id="fileFile" multiple>
     </div>
   </div>
 </div>
@@ -259,80 +251,77 @@ async function sendText() {
   }
 }
 
-/* ---------- 上传（图片/文件） ---------- */
-let pendingFile = null;
-let pendingKind = null;
-
-function bindDropzone(dzId, inputId, previewId, kind) {
-  const dz = $(dzId), input = $(inputId), preview = $(previewId);
-  dz.addEventListener('click', () => input.click());
-  input.addEventListener('change', () => {
-    if (input.files.length) showPending(input.files[0], kind);
-  });
-  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
-  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
-  dz.addEventListener('drop', e => {
-    e.preventDefault(); dz.classList.remove('drag');
-    if (e.dataTransfer.files.length) showPending(e.dataTransfer.files[0], kind);
-  });
-  return preview;
-}
-
-function showPending(file, kind) {
-  pendingFile = file; pendingKind = kind;
-  const preview = kind === 'image' ? $('#previewImage') : $('#previewFile');
-  const btn = kind === 'image' ? $('#btnSendImage') : $('#btnSendFile');
-  preview.innerHTML = '';
-  if (kind === 'image' && file.type.startsWith('image/')) {
-    const img = document.createElement('img');
-    img.src = URL.createObjectURL(file);
-    preview.appendChild(img);
-  }
-  const fn = document.createElement('div');
-  fn.className = 'fname'; fn.textContent = file.name + ' (' + fmtSize(file.size) + ')';
-  preview.appendChild(fn);
-  preview.style.display = 'block';
-  btn.disabled = false;
-}
-
-async function sendUpload(kind) {
-  if (!pendingFile) return;
+/* ---------- 上传：自动（拖拽/选择/粘贴即传，无需确认） ---------- */
+async function uploadFile(file) {
+  const kind = file.type && file.type.startsWith('image/') ? 'image' : 'file';
   const fd = new FormData();
-  fd.append('file', pendingFile);
+  fd.append('file', file);
   fd.append('kind', kind);
-  const btn = kind === 'image' ? $('#btnSendImage') : $('#btnSendFile');
-  btn.disabled = true; btn.textContent = '上传中…';
   try {
     const r = await fetch('/api/upload', {method: 'POST', body: fd});
     const d = await r.json();
     if (d.ok) {
-      pendingFile = null;
-      const preview = kind === 'image' ? $('#previewImage') : $('#previewFile');
-      preview.style.display = 'none'; preview.innerHTML = '';
-      ($('#fileImage')).value = ''; ($('#fileFile')).value = '';
       prependItem(d.item);
-    } else {
-      toast('上传失败: ' + (d.error || r.status));
+      return true;
     }
-  } finally {
-    btn.disabled = true; btn.textContent = '上传 ➤';
+    toast('上传失败: ' + (d.error || r.status));
+    return false;
+  } catch(e) {
+    toast('上传失败: ' + e.message);
+    return false;
   }
 }
 
-/* ---------- 全局 Ctrl+V 粘贴图片 ---------- */
+async function uploadFiles(files) {
+  const list = Array.from(files);
+  if (!list.length) return;
+  toast(`上传中 ${list.length} 个…`);
+  const results = await Promise.all(list.map(uploadFile));
+  const ok = results.filter(Boolean).length;
+  toast(`完成：${ok}/${list.length} 个上传成功`);
+}
+
+/* 点击 dropzone 选择文件 */
+function bindDropzone(dzId, inputId) {
+  const dz = $(dzId), input = $(inputId);
+  dz.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => {
+    const files = input.files;
+    input.value = '';
+    uploadFiles(files);
+  });
+}
+
+/* ---------- 全局拖拽：任意位置拖入文件自动上传 ---------- */
+document.addEventListener('dragover', e => {
+  e.preventDefault();
+  if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+    document.body.classList.add('dragging');
+  }
+});
+document.addEventListener('dragleave', () => document.body.classList.remove('dragging'));
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  document.body.classList.remove('dragging');
+  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+    uploadFiles(e.dataTransfer.files);
+  }
+});
+
+/* ---------- 全局 Ctrl+V 粘贴图片，自动上传 ---------- */
 document.addEventListener('paste', e => {
   const items = e.clipboardData && e.clipboardData.items;
   if (!items) return;
+  const files = [];
   for (const it of items) {
     if (it.type.startsWith('image/')) {
       const f = it.getAsFile();
-      if (f) {
-        switchTab('image');
-        showPending(f, 'image');
-        e.preventDefault();
-        return;
-      }
+      if (f) files.push(f);
     }
+  }
+  if (files.length) {
+    e.preventDefault();
+    uploadFiles(files);
   }
 });
 
@@ -483,10 +472,8 @@ async function poll() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-  bindDropzone('#dzImage', '#fileImage', '#previewImage', 'image');
-  bindDropzone('#dzFile', '#fileFile', '#previewFile', 'file');
-  $('#btnSendImage').onclick = () => sendUpload('image');
-  $('#btnSendFile').onclick = () => sendUpload('file');
+  bindDropzone('#dzImage', '#fileImage');
+  bindDropzone('#dzFile', '#fileFile');
   $('#textInput').addEventListener('keydown', e => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendText();
   });
