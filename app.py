@@ -6,6 +6,9 @@ import os
 import sqlite3
 import time
 import uuid
+import socket
+import asyncio
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
@@ -108,6 +111,24 @@ def disk_used(force: bool = False) -> int:
 def bump_disk_used(delta: int) -> None:
     if _disk_used["bytes"] is not None:
         _disk_used["bytes"] = max(0, _disk_used["bytes"] + delta)
+
+
+# ---------- 主机名解析：局域网 DNS(OpenWrt dnsmasq PTR) 反查设备主机名 ----------
+@lru_cache(maxsize=1024)
+def _lookup_hostname(ip: str) -> str | None:
+    try:
+        name = socket.gethostbyaddr(ip)[0]
+        return name or None
+    except Exception:
+        return None
+
+
+async def resolve_hostname(ip: str) -> str | None:
+    """反查 IP 的主机名（如 DESKTOP-4LUS303）。放线程池避免阻塞事件循环；
+    每 IP 只查一次并缓存（含失败负缓存）。"""
+    if not ip or ip.startswith(("127.", "172.", "10.", "::")):
+        return None
+    return await asyncio.to_thread(_lookup_hostname, ip)
 
 
 def prune(conn):
@@ -298,15 +319,19 @@ class TextIn(BaseModel):
 
 
 @app.post("/api/text")
-def add_text(body: TextIn, request: Request):
+async def add_text(body: TextIn, request: Request):
     content = (body.content or "").strip()
     if not content:
         return JSONResponse({"ok": False, "error": "内容为空"}, status_code=400)
     ip = request.client.host if request.client else ""
+    device = (body.device or "").strip() or None
+    host = await resolve_hostname(ip)
+    if host:
+        device = host  # 优先显示局域网主机名（如 DESKTOP-4LUS303）
     conn = get_db()
     cur = conn.execute(
         "INSERT INTO items (type, content, device, ip, created_at) VALUES (?,?,?,?,?)",
-        ("text", content, (body.device or "").strip() or None, ip, time.time()),
+        ("text", content, device, ip, time.time()),
     )
     conn.commit()
     item = conn.execute(
@@ -365,10 +390,14 @@ async def upload(request: Request, file: UploadFile = File(...), kind: str = For
     bump_disk_used(size)
 
     ip = request.client.host if request.client else ""
+    dev = device.strip() or None
+    host = await resolve_hostname(ip)
+    if host:
+        dev = host  # 优先显示局域网主机名（如 DESKTOP-4LUS303）
     conn = get_db()
     cur = conn.execute(
         "INSERT INTO items (type, filename, stored_name, size, device, ip, created_at) VALUES (?,?,?,?,?,?,?)",
-        (kind, file.filename, stored, size, device.strip() or None, ip, time.time()),
+        (kind, file.filename, stored, size, dev, ip, time.time()),
     )
     conn.commit()
     item = conn.execute(
