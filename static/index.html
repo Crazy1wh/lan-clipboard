@@ -539,6 +539,7 @@ function renderItem(it) {
   div.dataset.id = it.id;
   div.dataset.url = it.url || '';
   div.dataset.fname = it.filename || '';
+  div.dataset.size = it.size || 0;
 
   let body = '';
   if (it.type === 'text') {
@@ -610,6 +611,18 @@ function downloadItem(id) {
   const el = document.querySelector(`[data-id="${id}"]`);
   if (!el || !el.dataset.url) return;
   const fname = el.dataset.fname || 'download';
+  const GB = 1024 * 1024 * 1024;
+  if (parseInt(el.dataset.size || '0', 10) > GB) {
+    // 超大文件：走原生下载，避免 XHR 全量进内存导致浏览器崩溃（无进度显示）
+    const a = document.createElement('a');
+    a.href = location.origin + el.dataset.url;
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    toast('大文件已开始原生下载（浏览器下载栏查看进度）');
+    return;
+  }
   showUploadBar();
   const startT = Date.now();
   const xhr = new XMLHttpRequest();

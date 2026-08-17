@@ -11,3 +11,9 @@ services:
       - MAX_HISTORY=2000       # 历史记录保留条数（防文字类无限增长）
       - MAX_DISK_GB=10         # 数据总占用上限 GB，无单文件限制，上传受总量约束
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${PORT:-8010}/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

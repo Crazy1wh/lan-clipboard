@@ -31,6 +31,28 @@ UPLOAD_CHUNK = 1024 * 1024                              # 流式写入分块 1MB
 app = FastAPI(title="LAN Clipboard")
 
 
+# ---------- CSRF 防护：写操作校验 Origin/Referer 同源 ----------
+# 无认证服务若被恶意网页跨站请求（浏览器自动带 Cookie 之外的表单/JS POST），
+# 校验来源头：来自异源的写请求直接拒绝。无 Origin/Referer（curl 等）放行。
+@app.middleware("http")
+async def csrf_guard(request: Request, call_next):
+    if request.method in ("POST", "PUT", "DELETE"):
+        from urllib.parse import urlparse
+        source = request.headers.get("origin") or request.headers.get("referer")
+        if source:
+            host = (request.headers.get("host") or "").split(":")[0]
+            try:
+                if urlparse(source).hostname != host:
+                    return JSONResponse(
+                        {"ok": False, "error": "跨站请求被拒绝"}, status_code=403
+                    )
+            except ValueError:
+                return JSONResponse(
+                    {"ok": False, "error": "非法来源"}, status_code=403
+                )
+    return await call_next(request)
+
+
 # ---------- 初始化 ----------
 def init():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -69,8 +91,11 @@ def init():
 
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")   # 并发读写不互锁
+    conn.execute("PRAGMA busy_timeout=5000")  # 写锁忙等 5 秒，避免多设备同时操作报 database is locked
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 
@@ -242,7 +267,6 @@ def list_items(
         params.append(group_id)
     where = " AND ".join(conds)
     base = "SELECT i.*, g.name AS group_name FROM items i LEFT JOIN groups g ON i.group_id=g.id"
-    conn = get_db()
     if after_id:
         rows = conn.execute(
             f"{base} WHERE i.id>? AND {where} ORDER BY i.id DESC LIMIT ?",
@@ -356,6 +380,8 @@ async def add_text(body: TextIn, request: Request):
     content = (body.content or "").strip()
     if not content:
         return JSONResponse({"ok": False, "error": "内容为空"}, status_code=400)
+    if len(content) > 2 * 1024 * 1024:
+        return JSONResponse({"ok": False, "error": "内容超过 2MB 上限"}, status_code=413)
     ip = request.client.host if request.client else ""
     device = (body.device or "").strip() or None
     host = await resolve_hostname(ip)
@@ -390,8 +416,9 @@ async def upload(request: Request, file: UploadFile = File(...), kind: str = For
             status_code=413,
         )
     ext = Path(file.filename or "file").suffix.lower()
-    if kind == "image" and ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico"):
-        kind = "file"  # 不是图片就按普通文件存
+    # SVG 不作为图片内联渲染（同源下可执行脚本，防 XSS），按普通文件下载
+    if kind == "image" and ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico"):
+        kind = "file"
     stored = f"{int(time.time())}_{uuid.uuid4().hex[:8]}{ext}"
     dest = UPLOAD_DIR / stored
 
@@ -450,7 +477,7 @@ def get_file(stored_name: str):
         return JSONResponse({"ok": False, "error": "文件不存在"}, status_code=404)
     conn = get_db()
     r = conn.execute(
-        "SELECT * FROM items WHERE stored_name=?", (stored_name,)
+        "SELECT * FROM items WHERE stored_name=? AND deleted=0", (stored_name,)
     ).fetchone()
     conn.close()
     # 路径穿越防护：stored_name 必须是我们生成过的
@@ -535,6 +562,7 @@ def clear_all():
     conn.execute("DELETE FROM items")
     conn.commit()
     conn.close()
+    disk_used(force=True)  # 清空后重算磁盘占用，避免 stats 显示旧值
     return {"ok": True}
 
 
