@@ -7,6 +7,7 @@ services:
     volumes:
       - ./data:/app/data
     environment:
+      - PORT=8010             # 服务端口（改端口需同步修改下方 ports 映射）
       - MAX_HISTORY=2000       # 历史记录保留条数（防文字类无限增长）
       - MAX_DISK_GB=10         # 数据总占用上限 GB，无单文件限制，上传受总量约束
     restart: unless-stopped

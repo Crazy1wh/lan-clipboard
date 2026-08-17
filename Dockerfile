@@ -12,4 +12,5 @@ COPY static ./static
 VOLUME /app/data
 EXPOSE 8010
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8010"]
+# PORT 环境变量可覆盖端口（需同步修改 docker-compose 的端口映射）
+CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8010}"]
