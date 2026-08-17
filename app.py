@@ -20,9 +20,10 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "clipboard.db"
 
 MAX_HISTORY = int(os.getenv("MAX_HISTORY", "200"))      # 保留的历史条数
-MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "100"))      # 单文件大小上限 MB
 MAX_DISK_GB = float(os.getenv("MAX_DISK_GB", "10"))     # 数据目录总占用上限 GB，超出自动清理最旧
 PRUNE_TARGET_RATIO = 0.9                                # 清理到上限的 90%，避免频繁触发
+UPLOAD_CEIL_RATIO = 0.95                                # 上传后总占用不得超过上限的 95%（留 5% 给 DB 开销）
+UPLOAD_CHUNK = 1024 * 1024                              # 流式写入分块 1MB
 
 app = FastAPI(title="LAN Clipboard")
 
@@ -295,24 +296,54 @@ def add_text(body: TextIn, request: Request):
 
 @app.post("/api/upload")
 async def upload(request: Request, file: UploadFile = File(...), kind: str = Form("file")):
-    """上传图片或文件。kind: image | file（由前端按扩展名判断）"""
-    data = await file.read()
-    if not data:
-        return JSONResponse({"ok": False, "error": "文件为空"}, status_code=400)
-    if len(data) > MAX_FILE_MB * 1024 * 1024:
+    """上传图片或文件。无单文件上限：只要上传后总占用不超过容量上限的 95% 即可。
+    流式写入，边写边检查容量，超限即中止并清理。"""
+    limit = int(MAX_DISK_GB * 1024 ** 3)
+    ceil = int(limit * UPLOAD_CEIL_RATIO)
+    used = dir_size(DATA_DIR)
+    if used >= ceil:
+        free = (limit - used) / 1048576
         return JSONResponse(
-            {"ok": False, "error": f"文件超过 {MAX_FILE_MB}MB 上限"}, status_code=413
+            {"ok": False, "error": f"存储已满（剩 {free:.0f}MB），请先删除旧内容"},
+            status_code=413,
         )
     ext = Path(file.filename or "file").suffix.lower()
     if kind == "image" and ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico"):
         kind = "file"  # 不是图片就按普通文件存
     stored = f"{int(time.time())}_{uuid.uuid4().hex[:8]}{ext}"
-    (UPLOAD_DIR / stored).write_bytes(data)
+    dest = UPLOAD_DIR / stored
+
+    size = 0
+    try:
+        with dest.open("wb") as f:
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK)
+                if not chunk:
+                    break
+                next_size = size + len(chunk)
+                if used + next_size > ceil:
+                    # 容量不足：中止并清理
+                    f.close()
+                    dest.unlink(missing_ok=True)
+                    free = (limit - used) / 1048576
+                    return JSONResponse(
+                        {"ok": False, "error": f"容量不足（剩 {free:.0f}MB），已中止上传"},
+                        status_code=413,
+                    )
+                f.write(chunk)
+                size = next_size
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
+    if size == 0:
+        dest.unlink(missing_ok=True)
+        return JSONResponse({"ok": False, "error": "文件为空"}, status_code=400)
+
     ip = request.client.host if request.client else ""
     conn = get_db()
     cur = conn.execute(
         "INSERT INTO items (type, filename, stored_name, size, ip, created_at) VALUES (?,?,?,?,?,?)",
-        (kind, file.filename, stored, len(data), ip, time.time()),
+        (kind, file.filename, stored, size, ip, time.time()),
     )
     conn.commit()
     item = conn.execute(

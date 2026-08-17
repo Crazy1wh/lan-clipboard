@@ -185,6 +185,22 @@
     transition: all .3s; box-shadow: 0 4px 20px rgba(0,0,0,.4);
   }
   .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+  /* 上传进度条 */
+  .upload-bar {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 12px;
+  }
+  .ub-track {
+    height: 6px; border-radius: 3px; background: var(--card2); overflow: hidden;
+  }
+  .ub-fill {
+    height: 100%; width: 0%; border-radius: 3px; background: var(--accent);
+    transition: width .15s;
+  }
+  .ub-info {
+    margin-top: 6px; font-size: 12px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .empty { text-align: center; color: var(--muted); padding: 40px 0; font-size: 14px; }
   .spin { display: inline-block; animation: rot 1s linear infinite; }
   @keyframes rot { to { transform: rotate(360deg); } }
@@ -230,10 +246,16 @@
   <div class="panel" id="panel-file">
     <div class="dropzone" id="dzFile">
       <div class="big">📎 点击选择或拖拽文件，自动上传</div>
-      <div>单个文件 ≤ 100MB · 支持多文件</div>
+      <div>无单文件限制 · 受总量 10GB 约束 · 支持多文件</div>
       <input type="file" id="fileFile" multiple>
     </div>
   </div>
+</div>
+
+<!-- 上传进度条 -->
+<div class="upload-bar" id="uploadBar" style="display:none">
+  <div class="ub-track"><div class="ub-fill" id="ubFill"></div></div>
+  <div class="ub-info" id="ubInfo"></div>
 </div>
 
 <!-- 分组栏 -->
@@ -356,37 +378,79 @@ async function sendText() {
   }
 }
 
-/* ---------- 上传：自动（拖拽/选择/粘贴即传，无需确认） ---------- */
-async function uploadFile(file) {
-  const kind = file.type && file.type.startsWith('image/') ? 'image' : 'file';
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('kind', kind);
-  try {
-    const r = await fetch('/api/upload', {method: 'POST', body: fd});
-    const d = await r.json();
-    if (d.ok) {
-      if (view.type === 'all') {
-        prependItem(d.item);
-      }
-      return true;
-    }
-    toast('上传失败: ' + (d.error || r.status));
-    return false;
-  } catch(e) {
-    toast('上传失败: ' + e.message);
-    return false;
+/* ---------- 上传：自动（拖拽/选择/粘贴即传）+ 进度/速度显示 ---------- */
+let uploadIndex = 1;
+let uploadTotal = 1;
+
+function showUploadBar() {
+  $('#uploadBar').style.display = 'block';
+  $('#ubFill').style.width = '0%';
+}
+function updateUploadBar(file, pct, speedMbs, loaded, total) {
+  $('#ubFill').style.width = Math.min(100, pct) + '%';
+  if (pct >= 100) {
+    $('#ubInfo').textContent = `${file.name} 已完成，等待服务器处理…`;
+    return;
   }
+  const sizeStr = total ? `${fmtSize(loaded)} / ${fmtSize(total)}` : fmtSize(loaded);
+  $('#ubInfo').textContent =
+    `第 ${uploadIndex}/${uploadTotal} 个 · ${file.name} · ${pct}% · ${speedMbs.toFixed(1)}MB/s · ${sizeStr}`;
+}
+function hideUploadBar() {
+  $('#uploadBar').style.display = 'none';
+}
+
+function uploadFile(file) {
+  return new Promise(resolve => {
+    const kind = file.type && file.type.startsWith('image/') ? 'image' : 'file';
+    const startT = Date.now();
+    const xhr = new XMLHttpRequest();
+    xhr.upload.onprogress = e => {
+      if (!e.lengthComputable) return;
+      const secs = (Date.now() - startT) / 1000 || 1;
+      const speedMbs = e.loaded / secs / 1048576;
+      updateUploadBar(file, e.loaded / e.total * 100, speedMbs, e.loaded, e.total);
+    };
+    xhr.onload = () => {
+      let d = {ok: false, error: 'HTTP ' + xhr.status};
+      try { d = JSON.parse(xhr.responseText); } catch(e) {}
+      if (d.ok) {
+        if (view.type === 'all') prependItem(d.item);
+        resolve(true);
+      } else {
+        toast('上传失败: ' + (d.error || xhr.status));
+        resolve(false);
+      }
+    };
+    xhr.onerror = () => { toast('上传失败: 网络错误'); resolve(false); };
+    xhr.onabort = () => resolve(false);
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('kind', kind);
+    xhr.open('POST', '/api/upload');
+    xhr.send(fd);
+  });
 }
 
 async function uploadFiles(files) {
   const list = Array.from(files);
   if (!list.length) return;
-  toast(`上传中 ${list.length} 个…`);
-  const results = await Promise.all(list.map(uploadFile));
-  const ok = results.filter(Boolean).length;
-  toast(`完成：${ok}/${list.length} 个上传成功`);
+  uploadIndex = 1;
+  uploadTotal = list.length;
+  showUploadBar();
+  let okCount = 0;
+  for (const f of list) {
+    if (list.length > 1) {
+      updateUploadBar(f, 0, 0, 0, f.size);
+    }
+    const ok = await uploadFile(f);
+    if (ok) okCount++;
+    uploadIndex++;
+  }
+  hideUploadBar();
+  toast(`完成：${okCount}/${list.length} 个上传成功`);
   refreshStats();
+  if (view.type !== 'all') await loadView();
 }
 
 /* 点击 dropzone 选择文件 */
