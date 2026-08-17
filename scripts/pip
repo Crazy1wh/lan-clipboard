@@ -1,0 +1,4 @@
+#!/bin/bash
+# hermes verify 包装：默认 recipe 用系统 pip，且绑 8000（与 longfor 冲突）。
+# 通过 PATH 注入让 verify 的 bootstrap 走项目 .venv。
+exec "$(cd "$(dirname "$0")/.." && pwd)/.venv/bin/pip" "$@"

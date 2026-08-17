@@ -1,0 +1,16 @@
+#!/bin/bash
+# hermes verify 包装：默认 recipe 绑 8000（与 longfor-sign 容器冲突），改绑 8010。
+# 通过 PATH 注入让 verify 的 start 阶段用项目 .venv 的 uvicorn + 8010 端口。
+ARGS=()
+i=0
+while [ $i -lt $# ]; do
+  a="${@:$((i+1)):1}"
+  if [ "$a" = "--port" ]; then
+    ARGS+=("--port" "8010")
+    i=$((i+2))
+  else
+    ARGS+=("$a")
+    i=$((i+1))
+  fi
+done
+exec "$(cd "$(dirname "$0")/.." && pwd)/.venv/bin/uvicorn" "${ARGS[@]}"
