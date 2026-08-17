@@ -1,0 +1,12 @@
+services:
+  lan-clipboard:
+    build: .
+    container_name: lan-clipboard
+    ports:
+      - "8010:8010"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - MAX_HISTORY=200        # 历史记录保留条数
+      - MAX_FILE_MB=100        # 单文件大小上限 MB
+    restart: unless-stopped
