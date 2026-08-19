@@ -7,7 +7,8 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE: ghcr.io/${{ github.repository }}
+  # 仓库名可能含大写(Crazy1wh)，Docker tag 必须小写
+  IMAGE: ghcr.io/${{ lower(github.repository) }}
 
 jobs:
   build-push:
