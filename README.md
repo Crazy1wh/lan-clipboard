@@ -31,6 +31,11 @@ Docker（推荐）：
     pip install -r requirements.txt
     python app.py            # 默认 8010 端口，可用 PORT 环境变量修改
 
+预构建镜像（GitHub Actions 自动推送，推 main / v* 标签即触发）：
+
+    docker pull ghcr.io/crazy1wh/lan-clipboard:latest
+    docker run -d -p 8010:8010 -v ./data:/app/data ghcr.io/crazy1wh/lan-clipboard
+
 ## 配置（环境变量）
 
 默认值见 `.env.example`，直接复制为 `.env` 即可用 docker compose 覆盖（`cp .env.example .env`），也可用系统环境变量传入。

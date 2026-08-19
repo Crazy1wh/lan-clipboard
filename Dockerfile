@@ -1,5 +1,7 @@
-# 基础镜像走国内加速器（本机直连 Docker Hub 被墙；公网环境可改回 python:3.11-slim）
-FROM docker.1ms.run/library/python:3.11-slim
+# 基础镜像默认走国内加速器（本机直连 Docker Hub 被墙）；
+# CI/公网构建可传 build-arg 覆盖为官方源：--build-arg PYTHON_IMAGE=python:3.11-slim
+ARG PYTHON_IMAGE=docker.1ms.run/library/python:3.11-slim
+FROM ${PYTHON_IMAGE}
 
 WORKDIR /app
 
