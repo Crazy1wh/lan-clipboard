@@ -33,9 +33,11 @@ Docker（推荐）：
 
 ## 配置（环境变量）
 
+默认值见 `.env.example`，直接复制为 `.env` 即可用 docker compose 覆盖（`cp .env.example .env`），也可用系统环境变量传入。
+
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| PORT | 8010 | 服务端口（Docker 部署下改端口需同步修改 docker-compose 的 ports 映射） |
+| PORT | 8010 | 服务端口（Docker 部署下改 .env 即可，ports 映射已用 \${PORT} 同步） |
 | MAX_HISTORY | 2000 | 历史保留条数（防文字类无限增长） |
 | MAX_DISK_GB | 10 | 数据总占用上限 GB。无单文件限制，上传受总量约束；超出自动清理最旧内容 |
 | DATA_DIR | ./data | 数据目录（SQLite + 上传文件） |
