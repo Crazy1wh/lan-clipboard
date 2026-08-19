@@ -54,6 +54,7 @@
 
   /* 图片/文件上传区 */
   .dropzone {
+    display: block;
     border: 2px dashed var(--border); border-radius: 10px; padding: 26px 16px;
     text-align: center; color: var(--muted); font-size: 13px; cursor: pointer;
     transition: border-color .15s, background .15s;
@@ -239,19 +240,19 @@
   </div>
 
   <div class="panel" id="panel-image">
-    <div class="dropzone" id="dzImage">
+    <label class="dropzone" id="dzImage">
       <div class="big">🖼 点击选择 / 拖拽 / Ctrl+V 粘贴，自动上传</div>
       <div>PNG · JPG · GIF · WEBP · 支持多文件</div>
       <input type="file" id="fileImage" accept="image/*" multiple>
-    </div>
+    </label>
   </div>
 
   <div class="panel" id="panel-file">
-    <div class="dropzone" id="dzFile">
+    <label class="dropzone" id="dzFile">
       <div class="big">📎 点击选择或拖拽文件，自动上传</div>
       <div>无单文件限制 · 受总量 10GB 约束 · 支持多文件</div>
       <input type="file" id="fileFile" multiple>
-    </div>
+    </label>
   </div>
 </div>
 
@@ -484,10 +485,9 @@ async function uploadFiles(files) {
   if (view.type !== 'all') await loadView();
 }
 
-/* 点击 dropzone 选择文件 */
+/* 点击/触碰 dropzone 选择文件（label 原生激活 input，安卓/苹果各 WebView 均可靠） */
 function bindDropzone(dzId, inputId) {
-  const dz = $(dzId), input = $(inputId);
-  dz.addEventListener('click', () => input.click());
+  const input = $(inputId);
   input.addEventListener('change', () => {
     const files = input.files;
     input.value = '';
