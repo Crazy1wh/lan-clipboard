@@ -6,10 +6,6 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
-env:
-  # 仓库名可能含大写(Crazy1wh)，Docker tag 必须小写
-  IMAGE: ghcr.io/${{ lower(github.repository) }}
-
 jobs:
   build-push:
     runs-on: ubuntu-latest
@@ -18,6 +14,12 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+
+      # 仓库名可能含大写(Crazy1wh)，Docker tag 必须全小写，故用 shell 转小写
+      - name: Lowercase image name
+        run: |
+          IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
