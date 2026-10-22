@@ -1,6 +1,15 @@
 services:
   lan-clipboard:
-    build: .
+    build:
+      context: .
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-docker.1ms.run/library/python:3.11-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        BUILD_REPOSITORY: ${BUILD_REPOSITORY:-Crazy1wh/lan-clipboard}
+        BUILD_BRANCH: ${BUILD_BRANCH:-main}
+        BUILD_SHA: ${BUILD_SHA:-}
+        BUILD_COMMIT_DATE: ${BUILD_COMMIT_DATE:-}
+        BUILD_TIME: ${BUILD_TIME:-}
     container_name: lan-clipboard
     ports:
       - "${PORT:-8010}:${PORT:-8010}"
@@ -11,6 +20,8 @@ services:
       - MAX_HISTORY=${MAX_HISTORY:-2000}
       - MAX_DISK_GB=${MAX_DISK_GB:-10}
       - DATA_DIR=${DATA_DIR:-./data}
+      - GITHUB_TIMEOUT=${GITHUB_TIMEOUT:-3}
+      - VERSION_CACHE_TTL=${VERSION_CACHE_TTL:-300}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${PORT:-8010}/api/health', timeout=3)"]

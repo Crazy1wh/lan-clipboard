@@ -3,10 +3,22 @@
 ARG PYTHON_IMAGE=docker.1ms.run/library/python:3.11-slim
 FROM ${PYTHON_IMAGE}
 
+ARG BUILD_REPOSITORY=""
+ARG BUILD_BRANCH=""
+ARG BUILD_SHA=""
+ARG BUILD_COMMIT_DATE=""
+ARG BUILD_TIME=""
+ENV BUILD_REPOSITORY=${BUILD_REPOSITORY} \
+    BUILD_BRANCH=${BUILD_BRANCH} \
+    BUILD_SHA=${BUILD_SHA} \
+    BUILD_COMMIT_DATE=${BUILD_COMMIT_DATE} \
+    BUILD_TIME=${BUILD_TIME}
+
 WORKDIR /app
 
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r requirements.txt
 
 COPY app.py .
 COPY static ./static

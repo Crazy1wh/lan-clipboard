@@ -1,0 +1,3 @@
+#!/bin/bash
+# hermes verify 的测试阶段直接执行 pytest；转到项目虚拟环境，避免依赖系统 PATH。
+exec "$(cd "$(dirname "$0")/.." && pwd)/.venv/bin/pytest" "$@"

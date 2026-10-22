@@ -3,13 +3,20 @@
 FastAPI + SQLite，支持文字/图片/文件，历史记录，无需认证。
 """
 import os
+import json
+import re
 import sqlite3
+import subprocess
 import time
 import uuid
 import socket
 import asyncio
+import threading
 from functools import lru_cache
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
@@ -27,8 +34,164 @@ MAX_DISK_GB = float(os.getenv("MAX_DISK_GB", "10"))     # 数据目录总占用�
 PRUNE_TARGET_RATIO = 0.9                                # 清理到上限的 90%，避免频繁触发
 UPLOAD_CEIL_RATIO = 0.95                                # 上传后总占用不得超过上限的 95%（留 5% 给 DB 开销）
 UPLOAD_CHUNK = 1024 * 1024                              # 流式写入分块 1MB
+GIT_TIMEOUT = 1.5
+GITHUB_TIMEOUT = min(max(float(os.getenv("GITHUB_TIMEOUT", "3")), 0.2), 10.0)
+VERSION_CACHE_TTL = min(max(float(os.getenv("VERSION_CACHE_TTL", "300")), 1.0), 3600.0)
+DEFAULT_GITHUB_REPOSITORY = "Crazy1wh/lan-clipboard"
 
 app = FastAPI(title="LAN Clipboard")
+
+
+# ---------- 版本与更新信息 ----------
+_version_cache = {"expires": 0.0, "value": None}
+_version_lock = threading.Lock()
+_github_repo_re = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_sha_re = re.compile(r"^[0-9a-fA-F]{7,64}$")
+
+
+def _run_git(*args: str) -> str | None:
+    """读取本地 Git 元数据；源码树没有 .git 或 Git 卡住时快速返回。"""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(BASE_DIR), *args],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None
+
+
+def _github_repository(remote: str | None) -> str | None:
+    """只接受 github.com 的 owner/repo，不把任意 URL 反射给浏览器。"""
+    if not remote:
+        return None
+    value = remote.strip()
+    if _github_repo_re.fullmatch(value):
+        return value.removesuffix(".git")
+    match = re.match(
+        r"^(?:https?://github\.com/|ssh://git@github\.com/|git@github\.com:)([^/\s]+/[^/\s]+?)(?:\.git)?/?$",
+        value,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    repository = match.group(1).removesuffix(".git")
+    return repository if _github_repo_re.fullmatch(repository) else None
+
+
+def read_build_metadata() -> dict:
+    """Docker 注入优先；缺失字段安全回退到本地 Git。"""
+    log = _run_git("log", "-1", "--format=%H%n%cI") or ""
+    log_lines = log.splitlines()
+    git_sha = log_lines[0] if log_lines and _sha_re.fullmatch(log_lines[0]) else None
+    git_commit_date = log_lines[1] if len(log_lines) > 1 else None
+
+    sha = (os.getenv("BUILD_SHA") or "").strip() or git_sha
+    if sha and not _sha_re.fullmatch(sha):
+        sha = None
+    branch = (os.getenv("BUILD_BRANCH") or "").strip()
+    if not branch:
+        branch = _run_git("branch", "--show-current") or ""
+    if not branch:
+        remote_head = _run_git("symbolic-ref", "--short", "refs/remotes/origin/HEAD") or ""
+        branch = remote_head.removeprefix("origin/") or "main"
+    # Branch is only sent as a GitHub ref and link segment; reject controls/path traversal.
+    if len(branch) > 200 or any(c in branch for c in "\r\n\0") or ".." in branch:
+        branch = "main"
+
+    repository = _github_repository(os.getenv("BUILD_REPOSITORY"))
+    if not repository:
+        repository = _github_repository(_run_git("remote", "get-url", "origin"))
+    repository = repository or DEFAULT_GITHUB_REPOSITORY
+
+    return {
+        "branch": branch,
+        "sha": sha,
+        "short_sha": sha[:7] if sha else None,
+        "commit_date": (os.getenv("BUILD_COMMIT_DATE") or "").strip() or git_commit_date,
+        "build_time": (os.getenv("BUILD_TIME") or "").strip() or None,
+        "repository": repository,
+        "repository_url": f"https://github.com/{repository}",
+    }
+
+
+def _fetch_github_comparison(metadata: dict) -> dict:
+    """Compare upstream branch (base) with the running commit (head)."""
+    sha = metadata.get("sha")
+    branch = metadata.get("branch")
+    repository = metadata.get("repository")
+    if not sha or not branch or not repository:
+        raise ValueError("missing version metadata")
+    basehead = f"{quote(branch, safe='')}...{quote(sha, safe='')}"
+    url = f"https://api.github.com/repos/{repository}/compare/{basehead}"
+    request = UrlRequest(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2026-03-10",
+            "User-Agent": "lan-clipboard-version-check",
+        },
+    )
+    with urlopen(request, timeout=GITHUB_TIMEOUT) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    status = payload.get("status")
+    if status not in {"behind", "ahead", "diverged", "identical"}:
+        raise ValueError("unknown comparison status")
+    return {
+        "github_status": status,
+        "ahead_by": int(payload.get("ahead_by") or 0),
+        "behind_by": int(payload.get("behind_by") or 0),
+    }
+
+
+def _uncached_version_info() -> dict:
+    metadata = read_build_metadata()
+    update = {
+        "status": "unknown",
+        "available": False,
+        "github_status": None,
+        "ahead_by": None,
+        "behind_by": None,
+    }
+    try:
+        comparison = _fetch_github_comparison(metadata)
+        github_status = comparison["github_status"]
+        states = {
+            "identical": "current",
+            "behind": "available",
+            "ahead": "ahead",
+            "diverged": "diverged",
+        }
+        update.update(comparison)
+        update["status"] = states[github_status]
+        update["available"] = github_status == "behind"
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        # Offline/unavailable is deliberately distinct from "current".
+        pass
+
+    return {
+        **metadata,
+        "upstream_url": f"{metadata['repository_url']}/tree/{quote(metadata['branch'], safe='')}",
+        "update": update,
+    }
+
+
+def get_version_info() -> dict:
+    """TTL-cache successes and failures; one caller performs the network check."""
+    now = time.monotonic()
+    if _version_cache["value"] is not None and now < _version_cache["expires"]:
+        return _version_cache["value"]
+    with _version_lock:
+        now = time.monotonic()
+        if _version_cache["value"] is not None and now < _version_cache["expires"]:
+            return _version_cache["value"]
+        value = _uncached_version_info()
+        _version_cache.update(value=value, expires=now + VERSION_CACHE_TTL)
+        return value
 
 
 # ---------- CSRF 防护：写操作校验 Origin/Referer 同源 ----------
@@ -244,6 +407,11 @@ def index():
 @app.get("/api/health")
 def health():
     return {"ok": True, "time": time.time()}
+
+
+@app.get("/api/version")
+def version_info():
+    return get_version_info()
 
 
 @app.get("/api/items")

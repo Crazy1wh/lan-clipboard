@@ -54,7 +54,7 @@
 
   /* 图片/文件上传区 */
   .dropzone {
-    display: block;
+    display: block; position: relative; overflow: hidden;
     border: 2px dashed var(--border); border-radius: 10px; padding: 26px 16px;
     text-align: center; color: var(--muted); font-size: 13px; cursor: pointer;
     transition: border-color .15s, background .15s;
@@ -63,7 +63,10 @@
   body.dragging .composer { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,140,255,.25); }
   body.dragging .dropzone { border-color: var(--accent); background: rgba(79,140,255,.08); }
   .dropzone .big { font-size: 15px; color: var(--text); margin-bottom: 4px; }
-  .dropzone input[type=file] { display: none; }
+  .dropzone input[type=file] {
+    position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0;
+    cursor: pointer; font-size: 100px;
+  }
   .preview-box { margin-top: 10px; display: none; }
   .preview-box img { max-height: 160px; max-width: 100%; border-radius: 8px; display: block; }
   .preview-box .fname { font-size: 12px; color: var(--muted); margin-top: 6px; word-break: break-all; }
@@ -206,6 +209,16 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .empty { text-align: center; color: var(--muted); padding: 40px 0; font-size: 14px; }
+  .version-area {
+    display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center;
+    margin: -8px 0 12px; color: var(--muted); font-size: 11px; line-height: 1.45;
+  }
+  .version-area a { color: var(--accent); text-decoration: none; }
+  .version-area .update-available { color: #fbbf24; font-weight: 600; }
+  .version-area .update-current { color: var(--accent2); }
+  @media (max-width: 640px) {
+    .version-area { margin-top: -4px; font-size: 10px; gap: 2px 8px; }
+  }
   .spin { display: inline-block; animation: rot 1s linear infinite; }
   @keyframes rot { to { transform: rotate(360deg); } }
 </style>
@@ -221,6 +234,11 @@
     <button class="danger" onclick="clearAll()">🗑 清空</button>
   </div>
 </header>
+
+<div class="version-area" id="versionArea" aria-live="polite">
+  <span id="versionBuild">版本信息加载中…</span>
+  <a id="versionUpdate" href="https://github.com/Crazy1wh/lan-clipboard" target="_blank" rel="noopener">GitHub</a>
+</div>
 
 <!-- 输入区 -->
 <div class="composer">
@@ -249,10 +267,11 @@
 
   <div class="panel" id="panel-file">
     <label class="dropzone" id="dzFile">
-      <div class="big">📎 点击选择或拖拽文件，自动上传</div>
+      <div class="big">📎 点击选择、拖拽或粘贴文件，自动上传</div>
       <div>无单文件限制 · 受总量 10GB 约束 · 支持多文件</div>
       <input type="file" id="fileFile" multiple>
     </label>
+    <div class="hint" style="margin-top:7px">文件粘贴取决于浏览器/系统是否提供实际文件；网页不会申请读取剪贴板权限。</div>
   </div>
 </div>
 
@@ -402,10 +421,13 @@ async function sendText() {
 /* ---------- 上传：自动（拖拽/选择/粘贴即传）+ 进度/速度显示 ---------- */
 let uploadIndex = 1;
 let uploadTotal = 1;
+let uploadWorkerRunning = false;
+const uploadQueue = [];
 
 function showUploadBar() {
   $('#uploadBar').style.display = 'block';
   $('#ubFill').style.width = '0%';
+  $('#ubFill').style.background = '';
 }
 function fmtETA(secs) {
   if (!isFinite(secs) || secs < 0.5) return '计算中';
@@ -433,63 +455,125 @@ function hideUploadBar() {
 
 function uploadFile(file) {
   return new Promise(resolve => {
-    const kind = file.type && file.type.startsWith('image/') ? 'image' : 'file';
-    const startT = Date.now();
-    const xhr = new XMLHttpRequest();
-    xhr.upload.onprogress = e => {
-      if (!e.lengthComputable) return;
-      const secs = (Date.now() - startT) / 1000 || 1;
-      const speedMbs = e.loaded / secs / 1048576;
-      updateUploadBar(file, e.loaded / e.total * 100, speedMbs, e.loaded, e.total);
-    };
-    xhr.onload = () => {
-      let d = {ok: false, error: 'HTTP ' + xhr.status};
-      try { d = JSON.parse(xhr.responseText); } catch(e) {}
-      if (d.ok) {
-        if (view.type === 'all') prependItem(d.item);
-        resolve(true);
-      } else {
-        toast('上传失败: ' + (d.error || xhr.status));
-        resolve(false);
+    let xhr = null;
+    let settled = false;
+    const finish = (ok, error) => {
+      if (settled) return;
+      settled = true;
+      if (xhr) {
+        xhr.onload = null;
+        xhr.onerror = null;
+        xhr.onabort = null;
+        if (xhr.upload) xhr.upload.onprogress = null;
       }
+      if (!ok) {
+        const reason = error || '未知错误';
+        $('#ubFill').style.background = 'var(--danger)';
+        $('#ubInfo').textContent = `${file.name} · 上传失败：${reason}`;
+        toast('上传失败: ' + reason);
+      }
+      resolve({ok, error: error || null});
     };
-    xhr.onerror = () => { toast('上传失败: 网络错误'); resolve(false); };
-    xhr.onabort = () => resolve(false);
-    const fd = new FormData();
-    fd.append('file', file);
-    fd.append('kind', kind);
-    fd.append('device', DEVICE);
-    xhr.open('POST', '/api/upload');
-    xhr.send(fd);
+    try {
+      const kind = file.type && file.type.startsWith('image/') ? 'image' : 'file';
+      const startT = Date.now();
+      xhr = new XMLHttpRequest();
+      xhr.upload.onprogress = e => {
+        if (!e.lengthComputable) return;
+        const secs = (Date.now() - startT) / 1000 || 1;
+        const speedMbs = e.loaded / secs / 1048576;
+        updateUploadBar(file, e.loaded / e.total * 100, speedMbs, e.loaded, e.total);
+      };
+      xhr.onload = () => {
+        let d = {ok: false, error: 'HTTP ' + xhr.status};
+        try { d = JSON.parse(xhr.responseText); } catch(e) {}
+        if (d.ok) {
+          if (view.type === 'all') prependItem(d.item);
+          finish(true);
+        } else {
+          finish(false, d.error || 'HTTP ' + xhr.status);
+        }
+      };
+      xhr.onerror = () => finish(false, '网络错误');
+      xhr.onabort = () => finish(false, '上传已中止');
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('kind', kind);
+      fd.append('device', DEVICE);
+      xhr.open('POST', '/api/upload');
+      xhr.send(fd);
+    } catch(e) {
+      finish(false, '无法启动上传' + (e && e.message ? '：' + e.message : ''));
+    }
   });
 }
 
-async function uploadFiles(files) {
-  const list = Array.from(files);
-  if (!list.length) return;
+async function runUploadBatch(list) {
   uploadIndex = 1;
   uploadTotal = list.length;
   showUploadBar();
   let okCount = 0;
-  for (const f of list) {
-    if (list.length > 1) {
-      updateUploadBar(f, 0, 0, 0, f.size);
+  let lastError = '';
+  try {
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      uploadIndex = i + 1;
+      $('#ubFill').style.width = '0%';
+      $('#ubFill').style.background = '';
+      $('#ubInfo').textContent = `第 ${uploadIndex}/${uploadTotal} 个 · ${f.name} · 准备上传…`;
+      const result = await uploadFile(f);
+      if (result.ok) okCount++;
+      else lastError = result.error || '未知错误';
     }
-    const ok = await uploadFile(f);
-    if (ok) okCount++;
-    uploadIndex++;
+  } finally {
+    hideUploadBar();
+    refreshStats();
+    if (view.type !== 'all') await loadView();
   }
-  hideUploadBar();
-  toast(`完成：${okCount}/${list.length} 个上传成功`);
-  refreshStats();
-  if (view.type !== 'all') await loadView();
+  if (okCount === list.length) {
+    toast(`完成：${okCount}/${list.length} 个上传成功`);
+  } else {
+    toast(`上传结束：${okCount}/${list.length} 成功，${list.length - okCount} 失败${lastError ? ' · ' + lastError : ''}`);
+  }
+  return {okCount, total: list.length};
+}
+
+async function drainUploadQueue() {
+  if (uploadWorkerRunning) return;
+  uploadWorkerRunning = true;
+  try {
+    while (uploadQueue.length) {
+      const job = uploadQueue.shift();
+      try {
+        job.resolve(await runUploadBatch(job.files));
+      } catch(e) {
+        hideUploadBar();
+        toast('上传失败: ' + (e && e.message ? e.message : '未知错误'));
+        job.resolve({okCount: 0, total: job.files.length});
+      }
+    }
+  } finally {
+    uploadWorkerRunning = false;
+  }
+}
+
+function uploadFiles(files) {
+  const list = Array.from(files || []);
+  if (!list.length) return Promise.resolve({okCount: 0, total: 0});
+  return new Promise(resolve => {
+    uploadQueue.push({files: list, resolve});
+    if (uploadWorkerRunning) toast(`已加入上传队列：${list.length} 个文件`);
+    drainUploadQueue();
+  });
 }
 
 /* 点击/触碰 dropzone 选择文件（label 原生激活 input，安卓/苹果各 WebView 均可靠） */
 function bindDropzone(dzId, inputId) {
   const input = $(inputId);
   input.addEventListener('change', () => {
-    const files = input.files;
+    // iOS/Android may expose a live FileList that is cleared with input.value.
+    // Make a stable copy first so the same file can be selected again afterwards.
+    const files = Array.from(input.files);
     input.value = '';
     uploadFiles(files);
   });
@@ -511,17 +595,28 @@ document.addEventListener('drop', e => {
   }
 });
 
-/* ---------- 全局 Ctrl+V 粘贴图片，自动上传 ---------- */
-document.addEventListener('paste', e => {
-  const items = e.clipboardData && e.clipboardData.items;
-  if (!items) return;
+/* ---------- 全局粘贴实际文件（图片及浏览器提供的其他文件） ---------- */
+function clipboardFiles(data) {
+  if (!data) return [];
   const files = [];
-  for (const it of items) {
-    if (it.type.startsWith('image/')) {
-      const f = it.getAsFile();
-      if (f) files.push(f);
-    }
-  }
+  const seen = new Set();
+  const add = file => {
+    if (!file) return;
+    const key = [file.name, file.size, file.type, file.lastModified].join('\u0000');
+    if (seen.has(key)) return;
+    seen.add(key);
+    files.push(file);
+  };
+  Array.from(data.files || []).forEach(add);
+  Array.from(data.items || []).forEach(item => {
+    if (item.kind !== 'file') return;
+    try { add(item.getAsFile()); } catch(e) {}
+  });
+  return files;
+}
+
+document.addEventListener('paste', e => {
+  const files = clipboardFiles(e.clipboardData);
   if (files.length) {
     e.preventDefault();
     uploadFiles(files);
@@ -855,6 +950,7 @@ async function refreshAll() {
   try {
     await loadView();
     refreshStats();
+    refreshVersion();
     toast('已刷新');
   } catch(e) {
     $('#connState').textContent = '⚠ 连接失败，检查服务是否运行';
@@ -893,6 +989,53 @@ async function refreshStats() {
   } catch(e) {}
 }
 
+/* ---------- 运行版本 / 上游更新 ---------- */
+function versionDate(value) {
+  if (!value) return '未知';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toISOString().replace('T', ' ').replace(/:\d\d\.\d\d\dZ$/, ' UTC');
+}
+async function refreshVersion() {
+  const build = $('#versionBuild');
+  const update = $('#versionUpdate');
+  try {
+    const response = await fetch('/api/version');
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const data = await response.json();
+    const bits = [
+      `分支 ${data.branch || '未知'}`,
+      `提交 ${data.short_sha || '未知'}`,
+      `提交日期 ${versionDate(data.commit_date)}`
+    ];
+    bits.push(`构建日期 ${versionDate(data.build_time)}`);
+    build.textContent = bits.join(' · ');
+    if (typeof data.upstream_url === 'string' && data.upstream_url.startsWith('https://github.com/')) {
+      update.href = data.upstream_url;
+    }
+    update.className = '';
+    const state = data.update && data.update.status;
+    if (state === 'available') {
+      update.textContent = `↑ 上游有更新${data.update.behind_by ? '（' + data.update.behind_by + ' 个提交）' : ''}`;
+      update.className = 'update-available';
+    } else if (state === 'current') {
+      update.textContent = '✓ 已是上游最新版';
+      update.className = 'update-current';
+    } else if (state === 'ahead') {
+      update.textContent = '本地提交领先上游';
+    } else if (state === 'diverged') {
+      update.textContent = '本地与上游已分叉';
+    } else {
+      update.textContent = 'GitHub';
+      update.href = data.repository_url || 'https://github.com/Crazy1wh/lan-clipboard';
+    }
+  } catch(e) {
+    update.textContent = 'GitHub';
+    update.href = 'https://github.com/Crazy1wh/lan-clipboard';
+    update.className = '';
+  }
+}
+
 async function poll() {
   if (searchMode) return;  // 搜索时暂停自动刷新，避免污染结果
   if (view.type !== 'all') return;  // 非全部视图不做增量插入，避免错乱
@@ -925,6 +1068,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadView();
     await refreshGroups();
     refreshStats();
+    refreshVersion();
     $('#connState').textContent = '● 已连接 · 自动刷新 10s';
     $('#connState').style.color = '#6ee7b7';
   } catch(e) {
@@ -932,6 +1076,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     $('#connState').style.color = '#f87171';
   }
   setInterval(poll, POLL_MS);
+  setInterval(refreshVersion, 300000);
 });
 </script>
 </body>

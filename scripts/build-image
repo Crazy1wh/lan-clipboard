@@ -1,0 +1,13 @@
+#!/bin/sh
+# Build locally with version metadata; does not restart the running service.
+set -eu
+cd "$(dirname "$0")/.."
+export BUILD_REPOSITORY="${BUILD_REPOSITORY:-Crazy1wh/lan-clipboard}"
+export BUILD_BRANCH="${BUILD_BRANCH:-$(git branch --show-current)}"
+export BUILD_SHA="${BUILD_SHA:-$(git rev-parse HEAD)}"
+export BUILD_COMMIT_DATE="${BUILD_COMMIT_DATE:-$(git log -1 --format=%cI)}"
+export BUILD_TIME="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+    printf '%s\n' 'Warning: working tree has uncommitted changes; SHA identifies the base commit.' >&2
+fi
+docker compose build "$@"
